@@ -31,6 +31,9 @@ git branch --show-current
 ```
 
 2. Remember the starting branch and whether there are uncommitted changes.
+
+   If `git branch --show-current` returns empty (detached HEAD), stop and report that pull-main requires being on a named branch. Suggest `git checkout -b pull-main-recovery` to create a recovery branch, then retry.
+
 3. If there are uncommitted changes, create a temporary autostash before changing branches or pulling:
 
 ```bash
@@ -71,7 +74,7 @@ git rev-parse origin/main
 git stash pop
 ```
 
-If `git stash pop` reports conflicts, stop and report that the user's changes are now partially applied with conflicts to resolve. Do not run more integration or push commands.
+If `git stash pop` reports conflicts, stop and report that the user's changes are now partially applied with conflicts to resolve. Suggest `git merge --abort` (if in a merge state) or `git checkout --theirs . && git add -u && git stash drop` as recovery options. Do not run more integration or push commands.
 10. Verify state:
 
 ```bash
@@ -93,32 +96,42 @@ git checkout <starting-branch>
 git stash pop
 ```
 
-If `git stash pop` reports conflicts, stop and report that the user's changes are now partially applied with conflicts to resolve. Do not run merge, rebase, or push commands.
-13. Fetch and inspect the branch upstream, if any:
+If `git stash pop` reports conflicts, stop and report that the user's changes are now partially applied with conflicts to resolve. Suggest resolving conflicts manually or running `git checkout --theirs . && git add -u && git stash drop` to discard stashed changes. Do not run merge, rebase, or push commands.
+13. Check whether the work branch has any commits beyond updated `main`:
+
+```bash
+# If the branch has no unique commits, skip merge/rebase — it's already up to date
+if [ -z "$(git log main..HEAD --oneline)" ]; then
+  echo "Branch is already up to date with main."
+  # Stop here; no integration needed
+fi
+```
+
+14. Fetch and inspect the branch upstream, if any:
 
 ```bash
 git status --short --branch
 git rev-parse --abbrev-ref --symbolic-full-name @{u}
 ```
 
-14. Put the work branch on top of updated `main`:
+15. Put the work branch on top of updated `main`:
 
 - If the branch has no upstream or has not been pushed before, rebase the work branch onto `main`, then push normally with `git push -u origin <starting-branch>`.
 - If the branch already has an upstream, do not rebase it because publishing rewritten history would require a force push. Merge updated `main` into the work branch, then push normally with `git push`.
 
 ```bash
-git merge main
+git merge --no-edit main
 git push
 ```
 
-15. If the user specifically asked for a linear unpublished branch and the branch has no upstream, use:
+16. If the user specifically asked for a linear unpublished branch and the branch has no upstream, use:
 
 ```bash
 git rebase main
 git push -u origin <starting-branch>
 ```
 
-16. Verify clean state and report the final branch, whether `main` matches `origin/main`, whether an autostash was created and reapplied, what integration method was used, and whether anything was pushed.
+17. Verify clean state and report the final branch, whether `main` matches `origin/main`, whether an autostash was created and reapplied, what integration method was used, and whether anything was pushed.
 
 ## Expected Result
 
@@ -161,6 +174,10 @@ Local `main` is fast-forwarded to `origin/main`. If the user had uncommitted cha
 ```bash
 git status --short
 current_branch="$(git branch --show-current)"
+if [ -z "$current_branch" ]; then
+  echo "ERROR: detached HEAD — pull-main requires a named branch."
+  exit 1
+fi
 if [ -n "$(git status --short)" ]; then
   git stash push --include-untracked -m "pull-main autostash $(date -u +%Y%m%dT%H%M%SZ)"
 fi
@@ -173,7 +190,15 @@ if [ "$current_branch" = "main" ]; then
 else
   git checkout "$current_branch"
   git stash pop
-  git merge main
+  # Skip integration if branch has no unique commits
+  if [ -n "$(git log main..HEAD --oneline)" ]; then
+    # Rebase if unpublished, merge if published
+    if git rev-parse --abbrev-ref --symbolic-full-name @{u} >/dev/null 2>&1; then
+      git merge --no-edit main
+    else
+      git rebase main
+    fi
+  fi
 fi
 ```
 
